@@ -81,7 +81,3 @@ frontend/         React 交互页面
 
 仓库只包含源码和空白配置样例。`.env`、`data/`、上传论文、模型配置数据库、缓存、报告、日志及个人学习记录均不属于发布内容，已由 `.gitignore` 排除。不要把真实 API Key 写入源码、截图或 README；示例配置中的密钥保持为空。
 
-## 项目来源
-
-本项目基于 [jphJack/PaperMind-Agent](https://github.com/jphJack/PaperMind-Agent) 迭代。
-本仓库使用 PaperResearch-Agent 名称，发布内容为当前工作区筛选后的源码快照，保留项目来源说明。
