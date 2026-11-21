@@ -1,0 +1,55 @@
+# Local credentials and environment configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
+
+# Runtime data including provider settings, uploaded papers, caches and reports
+/data/
+/uploads/
+/cache/
+/reports/
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.log
+*.jsonl
+
+# Python and frontend build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+node_modules/
+dist/
+*.tsbuildinfo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local editor and generated learning material
+.vscode/
+.idea/
+.trae/
+.ua/
+.codex/
+.agents/
+/PaperMind-Agent 学习课程/
+/图谱/
+/发布准备/
+/frontend/验证截图/
+Thumbs.db
+.DS_Store
+create_pr_retry.py
+pr_result.json
