@@ -33,34 +33,29 @@
 
 ## 问答与分析工作台
 
-- **论文问答**：从论文库选定文献后提问，答案附原文片段与出处。对话历史可在侧栏重新打开。按 Enter 发送，Shift + Enter 换行。
+- **论文问答**：选定一篇或多篇论文提问，回答附原文引用，可在侧栏查看历史对话。
 - **研究分析**：从分析记录打开或追踪任务，完成后直接阅读报告，可复制全文或导出 Markdown、PDF。
 - **模型与推理强度**：在问答和新建分析的模型菜单选择模型。受支持的 DeepSeek 模型提供 low、high、max 三档。
 
 ## 界面预览
 
-以下图片于 **2026-11-21** 从当时的发布版前端截图，连接本机真实后端，读取已有论文库与已完成的 AutoPT 分析记录；没有使用模拟报告，也没有为截图重新发起模型分析。
+### 论文问答
 
-### 论文工作台
+选定一篇公开论文提问，点开引用可查看出处和原文片段。
 
-旧版截图展示论文管理、模型与研究方向，以及分析结果页面。
+![论文问答和展开的原文引用](docs/assets/workspace.png)
 
-![最新论文工作台](docs/assets/workspace.png)
+### 分析记录
 
-### 真实分析报告
+从历史列表查看任务状态，打开已完成的分析报告。
 
-报告包含背景、研究方向和实验方案，提供章节导航、成果概览、专注阅读及导出入口。
+![分析记录与任务状态](docs/assets/analysis-history.png)
 
-![真实历史研究报告](docs/assets/report.png)
+### 研究报告
 
-<details>
-<summary><strong>展开查看逐项评估界面</strong></summary>
+标题下方直接进入正文。目录、复制和导出集中在报告顶部。
 
-每条创新点展示新颖性、可行性、显著性及评分理由。页面中的分数是模型评估结果，不是人工评测或项目性能指标。
-
-![创新点逐项评估](docs/assets/evaluation.png)
-
-</details>
+![研究报告阅读页](docs/assets/report.png)
 
 ## 整体架构
 
@@ -71,7 +66,7 @@
 | 模块 | 主要职责 | 源码入口 |
 | --- | --- | --- |
 | React 工作台 | 上传、论文选择、进度订阅、报告阅读与历史切换 | [`App.tsx`](frontend/src/App.tsx) |
-| FastAPI 接口 | 创建后台任务，推送 SSE，读取报告与论文库 | [`routes.py`](backend/api/routes.py) |
+| FastAPI 接口 | 在本地启动分析任务，通过 SSE 推送进度，读取报告与论文库 | [`routes.py`](backend/api/routes.py) |
 | TaskManager | 管理本次任务状态、事件通知与持久化更新 | [`tasks.py`](backend/api/tasks.py) |
 | WorkflowOrchestrator | 组合 Controller 与后续步骤自校验，聚合结构化产物 | [`workflow.py`](backend/orchestrator/workflow.py) |
 | Controller | 固定预处理、生成后续计划、调度工具、组织上下文 | [`controller.py`](backend/orchestrator/controller.py) |
@@ -151,7 +146,7 @@ score = 0.6 × normalized_vector_score
       + 0.4 × normalized_bm25_score
 ```
 
-Chroma 保存向量与片段元数据，BM25 使用进程内索引。权重是当前配置，尚未通过独立标注集证明最优。检索相似度用于排序，不能直接当作证据是否支持某个研究空白的判断。
+Chroma 保存向量与片段元数据，BM25 使用进程内索引。权重是当前配置，尚未通过独立标注集证明最优。原文片段用于补充和追溯出处，目前尚未逐条核验它们是否支持候选研究空白。
 
 ### 3. 并发放在论文级，阶段之间保留数据依赖
 
@@ -206,7 +201,7 @@ Copy-Item .env.example .env
 
 ### 2. 配置模型
 
-在本地 `.env` 中填写自己的生成模型凭据，并准备本地 Embedding 模型：
+在本机的 `.env` 中填写 API Key，并配置 Embedding 模型。
 
 ```dotenv
 DEEPSEEK_API_KEY=
@@ -266,13 +261,3 @@ docs/assets/          界面示例截图 架构图与流程图
 .env.example          空白凭据配置样例
 run_backend.py        后端启动入口
 ```
-
-## 当前边界与后续计划
-
-- 当前是本地单进程应用，后台任务使用 `asyncio`，不是独立任务队列或多租户服务。
-- 原文片段用于补充与追溯，尚未逐条判定其对候选空白是支持、反驳还是证据不足。模型评分也不能代替人工科研判断。
-- 后续优先补充证据支持性检查、检索标注集与消融评测、缓存版本管理，以及更完整的中断恢复。
-
-## 凭据与运行数据
-
-`.env`、`data/`、上传论文、模型配置数据库、缓存、运行报告和日志由 `.gitignore` 排除。配置样例中的密钥为空，README 截图不包含密钥设置内容。原始论文和完整运行数据库未随源码发布。
