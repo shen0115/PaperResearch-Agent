@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from threading import Lock
 import time
 import uuid
 from typing import Optional
@@ -27,10 +28,13 @@ class ChromaStore:
         self.collection_name = collection_name
         self._client = None
         self._collection = None
+        self._init_lock = Lock()
 
     def _ensure(self):
         """懒初始化 client 和 collection，首次访问时建立"""
-        if self._client is None:
+        with self._init_lock:
+            if self._collection is not None:
+                return
             _t0 = time.perf_counter()
             # 延迟导入，避免模块导入即触发 chromadb 重型初始化
             import chromadb
@@ -90,18 +94,35 @@ class ChromaStore:
             paper_path, t_add - t_emb, t_add - t0,
         )
 
-    def vector_search(self, query: str, top_k: int = 5) -> list[dict]:
+    def get_paper_chunks(self, paper_paths: list[str]) -> list[dict]:
+        """从持久索引读取指定论文的文本，供限定范围的 BM25 检索使用。"""
+        self._ensure()
+        result = self._collection.get(
+            where={"paper_path": {"$in": paper_paths}},
+            include=["documents", "metadatas"],
+        )
+        return [
+            {**metadata, "text": document}
+            for document, metadata in zip(result["documents"], result["metadatas"])
+        ]
+
+    def vector_search(
+        self, query: str, top_k: int = 5, *, paper_paths: Optional[list[str]] = None
+    ) -> list[dict]:
         """向量检索，返回 top_k 结果。
 
         Returns:
             list[dict]，每项 {text, paper_path, title, section, score}
             score 越大越相似（由距离转换得到）。
         """
+        if paper_paths == []:
+            return []
         self._ensure()
         query_emb = self.embedder.embed_query(query)
         results = self._collection.query(
             query_embeddings=[query_emb],
             n_results=top_k,
+            where={"paper_path": {"$in": paper_paths}} if paper_paths is not None else None,
         )
         out: list[dict] = []
         # chroma 返回结构：每个字段是“外层 list=查询数，内层 list=结果数”

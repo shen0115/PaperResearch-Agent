@@ -54,7 +54,7 @@ class BM25Store:
     def _ensure_index(self):
         """懒构建 BM25 索引：有新增时重建"""
         if self._dirty or self._bm25 is None:
-            if self._tokenized:
+            if any(self._tokenized):
                 self._bm25 = BM25Okapi(self._tokenized)
             else:
                 self._bm25 = None

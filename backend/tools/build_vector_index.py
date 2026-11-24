@@ -1,15 +1,23 @@
 """步骤3 索引构建工具：将解析后的论文加入混合检索向量库"""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from threading import Lock
+from typing import TYPE_CHECKING
 
 from backend.tools.base import Tool
+
+if TYPE_CHECKING:
+    from backend.models.schemas import ParsedPaper
 
 logger = logging.getLogger(__name__)
 
 # 模块级单例：懒加载，避免导入即触发重型依赖（Embedder/Chroma/BM25）
 _hybrid_searcher = None
+_searcher_lock = Lock()
+_index_write_lock = Lock()
 
 
 def _get_searcher():
@@ -19,7 +27,9 @@ def _get_searcher():
     保证索引写入与检索读取状态一致。
     """
     global _hybrid_searcher
-    if _hybrid_searcher is None:
+    with _searcher_lock:
+        if _hybrid_searcher is not None:
+            return _hybrid_searcher
         _t0 = time.perf_counter()
         from backend.rag.hybrid_search import HybridSearcher
 
@@ -28,7 +38,7 @@ def _get_searcher():
             "[_get_searcher] HybridSearcher 实例化完成: %.3fs（含 Embedder/ChromaStore/BM25Store 构造，未加载模型）",
             time.perf_counter() - _t0,
         )
-    return _hybrid_searcher
+        return _hybrid_searcher
 
 
 def _get_vector_store():
@@ -77,19 +87,27 @@ def delete_paper_chunks(paper_path: str) -> int:
         删除的 chunk 数量
     """
     try:
-        store = _get_vector_store()
-        store._ensure()
-        collection = store._collection
-        result = collection.get(where={"paper_path": paper_path})
-        ids = result.get("ids", []) if result else []
-        if ids:
-            collection.delete(ids=ids)
-            logger.info("已删除论文 %s 的 %d 个 chunks", paper_path, len(ids))
+        with _index_write_lock:
+            store = _get_vector_store()
+            store._ensure()
+            collection = store._collection
+            result = collection.get(where={"paper_path": paper_path})
+            ids = result.get("ids", []) if result else []
+            if ids:
+                collection.delete(ids=ids)
+                logger.info("已删除论文 %s 的 %d 个 chunks", paper_path, len(ids))
             return len(ids)
-        return 0
     except Exception as exc:
         logger.warning("删除论文 chunks 失败: %s", exc)
         return 0
+
+
+def _add_paper_if_missing(paper: ParsedPaper) -> bool:
+    with _index_write_lock:
+        if paper.path and is_indexed(paper.path):
+            return False
+        _get_searcher().add_paper(paper)
+        return True
 
 
 async def build_vector_index(papers_json: list[dict]) -> dict:
@@ -108,10 +126,6 @@ async def build_vector_index(papers_json: list[dict]) -> dict:
     _t_fn_start = time.perf_counter()
     logger.info("[build_vector_index] 入口: %d papers", len(papers_json))
 
-    _t0 = time.perf_counter()
-    searcher = _get_searcher()
-    logger.info("[build_vector_index] _get_searcher: %.3fs", time.perf_counter() - _t0)
-
     indexed = 0
     skipped = 0
     for paper_dict in papers_json:
@@ -119,13 +133,6 @@ async def build_vector_index(papers_json: list[dict]) -> dict:
             paper_path = paper_dict.get("path", "")
             _t_paper0 = time.perf_counter()
 
-            # 去重：已索引的论文跳过
-            if paper_path and is_indexed(paper_path):
-                logger.info("论文 %s 已索引，跳过", paper_path)
-                skipped += 1
-                continue
-
-            _t_dedup = time.perf_counter()
             sections = [
                 Section(
                     heading=s.get("heading", ""),
@@ -141,10 +148,12 @@ async def build_vector_index(papers_json: list[dict]) -> dict:
             )
             _t_construct = time.perf_counter()
             logger.info(
-                "[build_vector_index] %s: dedup_check=%.3fs paper_construct=%.3fs sections=%d",
-                paper_path, _t_dedup - _t_paper0, _t_construct - _t_dedup, len(sections),
+                "[build_vector_index] %s: paper_construct=%.3fs sections=%d",
+                paper_path, _t_construct - _t_paper0, len(sections),
             )
-            await searcher.async_add_paper(paper)
+            if not await asyncio.to_thread(_add_paper_if_missing, paper):
+                skipped += 1
+                continue
             _t_add = time.perf_counter()
             logger.info(
                 "[build_vector_index] %s: async_add_paper=%.3fs (paper total=%.3fs)",

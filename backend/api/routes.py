@@ -23,7 +23,7 @@ from backend.api.tasks import task_manager
 from backend.api.model_settings import require_local_origin
 from backend.config import settings
 from backend.evaluator.evaluator import Evaluator
-from backend.llm.client import DeepSeekClient, task_client
+from backend.llm.client import DeepSeekClient, ReasoningEffort, reasoning_efforts, task_client
 from backend.memory.manager import MemoryManager
 from backend.orchestrator.workflow import WorkflowOrchestrator
 from backend.storage.paper_library import compute_paper_id, get_paper_library
@@ -45,6 +45,7 @@ class AnalyzeRequest(BaseModel):
     folder_path: Optional[str] = Field(default=None, description="待分析的 PDF 文件夹路径（与 paper_ids 二选一）")
     paper_ids: Optional[list[str]] = Field(default=None, description="上传论文 ID 列表（与 folder_path 二选一）")
     research_direction: Optional[str] = Field(default=None, description="用户研究方向（可选）")
+    reasoning_effort: ReasoningEffort | None = None
 
 
 # ---------------------------------------------------------------------- #
@@ -57,6 +58,7 @@ async def run_analysis(
     folder_path: Optional[str] = None,
     paper_ids: Optional[list[str]] = None,
     research_direction: Optional[str] = None,
+    reasoning_effort: ReasoningEffort | None = None,
 ) -> None:
     """后台分析主流程：编排工作流 → 生成报告 → 生成评估 → 更新任务状态
 
@@ -80,7 +82,10 @@ async def run_analysis(
         )
 
         # 初始化组件：DeepSeek 客户端 + 工具注册表 + 记忆管理器
-        client = DeepSeekClient(model_config, on_usage=lambda usage: task_manager.update_task(task_id, usage=usage))
+        client = DeepSeekClient(
+            model_config, on_usage=lambda usage: task_manager.update_task(task_id, usage=usage),
+            reasoning_effort=reasoning_effort,
+        )
         context_token = task_client.set(client)
         registry = build_default_registry()
         memory = MemoryManager()
@@ -187,6 +192,8 @@ async def analyze(request: AnalyzeRequest) -> dict:
     model_config = load_model()
     if not model_config.api_key:
         raise HTTPException(400, "请先配置模型和 API Key。")
+    if request.reasoning_effort and request.reasoning_effort not in reasoning_efforts(model_config.base_url, model_config.model):
+        raise HTTPException(422, "所选模型不支持这个推理强度。")
     library = get_paper_library()
     papers = [library.get(paper_id) or {} for paper_id in request.paper_ids or []]
     if request.paper_ids:
@@ -212,6 +219,7 @@ async def analyze(request: AnalyzeRequest) -> dict:
             folder_path=request.folder_path,
             paper_ids=request.paper_ids,
             research_direction=request.research_direction,
+            reasoning_effort=request.reasoning_effort,
         )
     )
 
@@ -306,7 +314,7 @@ async def delete_paper(paper_id: str) -> dict:
         {"deleted": bool, "paper_id": str}
     """
     library = get_paper_library()
-    deleted = library.delete(paper_id)
+    deleted = await asyncio.to_thread(library.delete, paper_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"论文 {paper_id} 不存在")
     return {"deleted": True, "paper_id": paper_id}
@@ -441,7 +449,7 @@ def export_report(task_id: str) -> Response:
     return Response(
         render_report_pdf(markdown),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="PaperResearch-Agent-{task_id}.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="PaperMind-{task_id}.pdf"'},
     )
 
 

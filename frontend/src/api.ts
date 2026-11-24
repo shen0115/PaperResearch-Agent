@@ -1,6 +1,6 @@
 // API 调用封装：统一处理后端 /api/* 接口
 import type { ProgressEvent, Report, TaskStatus, HealthInfo, Paper, UploadResponse, AnalyzeParams } from './types'
-import type { HistoryEntry, ModelCompatibility, ModelSettings } from './types'
+import type { HistoryEntry, ModelCompatibility, ModelSettings, PaperChat, PaperChatSummary, ReasoningEffort } from './types'
 
 /** 后端基础地址（vite 代理已将 /api 转发到 localhost:8000） */
 const API_BASE = '/api'
@@ -38,6 +38,24 @@ export async function startAnalysis(params: AnalyzeParams): Promise<{ task_id: s
   return requestJson<{ task_id: string }>(`${API_BASE}/analyze`, {
     method: 'POST',
     body: JSON.stringify(params),
+  })
+}
+
+export function listPaperChats(): Promise<{ conversations: PaperChatSummary[] }> {
+  return requestJson(`${API_BASE}/qa/conversations`)
+}
+
+export function getPaperChat(id: string): Promise<PaperChat> {
+  return requestJson(`${API_BASE}/qa/conversations/${id}`)
+}
+
+export function askPaperChat(
+  id: string,
+  body: { turn_id: string; question: string; paper_ids: string[]; expected_turns: number; model?: string; reasoning_effort?: ReasoningEffort },
+): Promise<PaperChat> {
+  return requestJson(`${API_BASE}/qa/conversations/${id}/turns`, {
+    method: 'POST',
+    body: JSON.stringify(body),
   })
 }
 
@@ -158,7 +176,7 @@ export function getModelSettings() {
 }
 
 export function discoverModels(connection: ProviderConnection) {
-  return requestJson<{ models: string[] }>(`${API_BASE}/model-settings/models`, {
+  return requestJson<{ models: string[]; reasoning_efforts?: Record<string, ReasoningEffort[]> }>(`${API_BASE}/model-settings/models`, {
     method: 'POST',
     body: JSON.stringify(connection),
   })

@@ -4,18 +4,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { deleteHistory, deletePaper, getHealth, getHistory, getReport, listPapers, startAnalysis, subscribeProgress, uploadPaper } from './api'
 import { STAGE_LIST } from './types'
-import type { AnalyzeParams, Evaluation, HistoryEntry, Paper, ProgressEvent, Report, StageKey } from './types'
+import type { AnalyzeParams, Evaluation, HistoryEntry, Paper, ProgressEvent, ReasoningEffort, Report, StageKey } from './types'
 import AnalysisProgress from './components/AnalysisProgress'
 import type { AnalysisIssue } from './components/AnalysisProgress'
 import EvaluationPanel from './components/EvaluationPanel'
 import ReportView from './components/ReportView'
 import PaperLibrary from './components/PaperLibrary'
-import ModelSettingsDialog from './components/ModelSettingsDialog'
 import ModelPicker from './components/ModelPicker'
 import HistoryPanel, { CostLabel } from './components/HistoryPanel'
 import PanelErrorBoundary from './components/PanelErrorBoundary'
 import { useReportScroll } from './useReportScroll'
 import WorkspaceTabs from './components/WorkspaceTabs'
+import WorkspaceDivider from './components/WorkspaceDivider'
+import WorkspaceSettings from './components/WorkspaceSettings'
+import AnalysisSetup from './components/AnalysisSetup'
+import PaperChatPanel, { PaperChatHistory } from './components/PaperChatPanel'
+import { usePaperChat } from './usePaperChat'
 
 /** 初始化：所有阶段事件为空 */
 function createEmptyEvents(): Record<StageKey, ProgressEvent | undefined> {
@@ -25,6 +29,7 @@ function createEmptyEvents(): Record<StageKey, ProgressEvent | undefined> {
 }
 
 type TabKey = 'report' | 'evaluation' | 'progress'
+type AnalysisView = 'setup' | 'history' | 'results'
 type Theme = 'light' | 'dark'
 
 const THEME_STORAGE_KEY = 'papermind-theme'
@@ -58,16 +63,21 @@ export default function App() {
   const [starting, setStarting] = useState(false)
   const [running, setRunning] = useState(false)
 
-  // 输入模式：上传论文 / 文件夹路径
+  // 分析来源：论文库 / 文件夹路径
   const [inputMode, setInputMode] = useState<'upload' | 'folder'>('upload')
   // 论文库列表与选中状态
   const [papers, setPapers] = useState<Paper[]>([])
   const [selectedPaperIds, setSelectedPaperIds] = useState<Set<string>>(new Set())
+  const [workspaceMode, setWorkspaceMode] = useState<'qa' | 'analysis'>('qa')
+  const paperChat = usePaperChat()
+  const draftSelections = useRef(new Map<string, Set<string>>())
+  const [mobileLibraryOpen, setMobileLibraryOpen] = useState(false)
   // 研究方向（注入创新点生成提示词）
   const [researchDirection, setResearchDirection] = useState('')
   // 上传中状态
   const [uploading, setUploading] = useState(false)
   const uploadLock = useRef(false)
+  const paperFileInput = useRef<HTMLInputElement>(null)
   const [uploadQueue, setUploadQueue] = useState<Array<{ name: string; status: 'waiting' | 'uploading' | 'done' | 'failed'; message?: string }>>([])
   const [papersLoading, setPapersLoading] = useState(true)
   const [papersError, setPapersError] = useState('')
@@ -96,16 +106,24 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [model, setModel] = useState<string>('deepseek-chat')
   const [modelRevision, setModelRevision] = useState(0)
+  const [chatModel, setChatModel] = useState<string>()
+  const [chatReasoning, setChatReasoning] = useState<{ model: string; effort: ReasoningEffort }>()
+  const [analysisReasoning, setAnalysisReasoning] = useState<{ model: string; effort: ReasoningEffort }>()
+  const activeChatModel = chatModel ?? model
+  const chatEffort = chatReasoning?.model === activeChatModel ? chatReasoning.effort : undefined
+  const analysisEffort = analysisReasoning?.model === model ? analysisReasoning.effort : undefined
   const [modelSaving, setModelSaving] = useState(false)
   const [healthOk, setHealthOk] = useState<boolean | null>(null)
   const [healthRevision, setHealthRevision] = useState(0)
 
   // Tab 切换
   const [activeTab, setActiveTab] = useState<TabKey>('report')
+  const [analysisView, setAnalysisView] = useState<AnalysisView>('setup')
   const reportContainerRef = useRef<HTMLDivElement>(null)
   const markdown = report?.markdown ?? report?.report?.markdown ?? ''
   const { remember: rememberReportScroll, forget: forgetReportScroll } = useReportScroll(
-    activeTab === 'report' && markdown && !historyLoading && !reportLoading ? reportId : null,
+    workspaceMode === 'analysis' && analysisView === 'results' && activeTab === 'report' &&
+      markdown && !historyLoading && !reportLoading ? reportId : null,
     reportContainerRef,
   )
 
@@ -113,6 +131,57 @@ export default function App() {
     if (tab === activeTab) return
     rememberReportScroll()
     setActiveTab(tab)
+  }
+
+  function showQuestions() {
+    if (workspaceMode === 'qa') return
+    rememberReportScroll()
+    setWorkspaceMode('qa')
+  }
+
+  function showAnalysisView(view: AnalysisView) {
+    rememberReportScroll()
+    setAnalysisView(view)
+  }
+
+  function rememberDraftSelection() {
+    if (!paperChat.chat) draftSelections.current.set(paperChat.draftId, selectedPaperIds)
+  }
+
+  function openPaperDraft(id: string) {
+    if (!paperChat.showDraft(id)) return
+    rememberDraftSelection()
+    const savedSelection = draftSelections.current.get(id)
+    if (savedSelection) {
+      setSelectedPaperIds(new Set([...savedSelection].filter(id => papers.some(paper => paper.paper_id === id))))
+    }
+    setMobileLibraryOpen(false)
+    showQuestions()
+  }
+
+  function newPaperChat() {
+    const id = paperChat.chat || paperChat.draft.trim()
+      ? `draft:${crypto.randomUUID()}`
+      : paperChat.draftId
+    openPaperDraft(id)
+  }
+
+  function startPaperChatWithSelection() {
+    if (!paperChat.showDraft(`draft:${crypto.randomUUID()}`, paperChat.draft)) return
+    setMobileLibraryOpen(false)
+    showQuestions()
+  }
+
+  async function openPaperChat(id: string) {
+    rememberDraftSelection()
+    showQuestions()
+    const conversation = await paperChat.openChat(id)
+    if (conversation) {
+      setMobileLibraryOpen(false)
+      setSelectedPaperIds(new Set(conversation.papers
+        .map(paper => paper.paper_id)
+        .filter(id => papers.some(paper => paper.paper_id === id))))
+    }
   }
 
   function toggleReading() {
@@ -265,13 +334,15 @@ export default function App() {
 
   /** 拉取最终报告 */
   const fetchReport = useCallback(async (id: string) => {
-    historyRequest.current += 1
+    const request = ++historyRequest.current
     setHistoryLoading(false)
     setHistoryReportError('')
     setReportLoading(true)
     try {
       const r = await getReport(id)
+      if (request !== historyRequest.current) return
       const showReport = () => {
+        if (request !== historyRequest.current) return
         setReport(r)
         setReportId(id)
         setReportLoading(false)
@@ -284,24 +355,27 @@ export default function App() {
         showReport()
       }
     } catch (err) {
+      if (request !== historyRequest.current) return
       setAnalysisIssue({
         kind: 'report',
         message: `获取报告失败：${err instanceof Error ? err.message : String(err)}`,
       })
       setActiveTab('progress')
     } finally {
-      setReportLoading(false)
+      if (request === historyRequest.current) setReportLoading(false)
     }
   }, [])
 
   async function openHistory(id: string) {
     rememberReportScroll()
     const request = ++historyRequest.current
+    setReportLoading(false)
     setHistoryLoading(true)
     setHistoryReportError('')
     setReport(null)
     setReportId(id)
     setActiveTab('report')
+    setAnalysisView('results')
     try {
       const saved = await getReport(id)
       if (request === historyRequest.current) setReport(saved)
@@ -337,15 +411,17 @@ export default function App() {
 
   const connectProgress = useCallback((id: string) => {
     closeSource()
-    sourceRef.current = subscribeProgress(
+    const source = subscribeProgress(
       id,
       (evt) => {
+        if (sourceRef.current !== source) return
         setEventsByStage((prev) => ({ ...prev, [evt.stage]: evt }))
         if (Number.isFinite(evt.progress)) {
           setOverallProgress((prev) => Math.max(prev, evt.progress))
         }
       },
       (completion) => {
+        if (sourceRef.current !== source) return
         sourceRef.current = null
         setRunning(false)
         if (completion.status === 'failed') {
@@ -357,16 +433,46 @@ export default function App() {
         setOverallProgress(1)
         void fetchReport(id)
       },
-      () => setAnalysisIssue({ kind: 'connection', message: '进度连接中断，正在尝试重新连接。' }),
-      () => setAnalysisIssue((issue) => issue?.kind === 'connection' ? null : issue),
+      () => {
+        if (sourceRef.current === source) {
+          setAnalysisIssue({ kind: 'connection', message: '进度连接中断，正在尝试重新连接。' })
+        }
+      },
+      () => {
+        if (sourceRef.current === source) setAnalysisIssue((issue) => issue?.kind === 'connection' ? null : issue)
+      },
     )
+    sourceRef.current = source
   }, [closeSource, fetchReport])
+
+  function openRunningAnalysis(entry: HistoryEntry) {
+    if (starting) return
+    showAnalysisView('results')
+    setActiveTab('progress')
+    if (taskId === entry.task_id && (sourceRef.current || entry.status === 'failed' || entry.status === 'interrupted')) return
+
+    historyRequest.current += 1
+    setReportLoading(false)
+    setHistoryLoading(false)
+    setHistoryReportError('')
+    setReport(null)
+    setReportId(null)
+    setTaskId(entry.task_id)
+    setRunNumber(previous => previous + 1)
+    const startedAt = Date.parse(entry.created_at)
+    setRunStartedAt(Number.isFinite(startedAt) ? startedAt : null)
+    setEventsByStage(createEmptyEvents())
+    setOverallProgress(0)
+    setAnalysisIssue(null)
+    setRunning(true)
+    connectProgress(entry.task_id)
+  }
 
   /** 启动分析 */
   const handleStart = useCallback(async () => {
     if (uploadLock.current || modelSaving || starting || running || reportLoading) return
     // 根据输入模式构建请求参数
-    const params: AnalyzeParams = {}
+    const params: AnalyzeParams = { reasoning_effort: analysisEffort }
     if (inputMode === 'folder') {
       const path = folderPath.trim()
       if (!path) {
@@ -400,6 +506,7 @@ export default function App() {
     setEventsByStage(createEmptyEvents())
     setRunNumber((previous) => previous + 1)
     setActiveTab('progress')
+    setAnalysisView('results')
 
     // 关闭可能存在的旧订阅
     closeSource()
@@ -418,7 +525,7 @@ export default function App() {
     } finally {
       setStarting(false)
     }
-  }, [inputMode, folderPath, selectedPaperIds, researchDirection, closeSource, connectProgress, rememberReportScroll, modelSaving, starting, running, reportLoading])
+  }, [inputMode, folderPath, selectedPaperIds, researchDirection, analysisEffort, closeSource, connectProgress, rememberReportScroll, modelSaving, starting, running, reportLoading])
 
   const handleRetry = useCallback(() => {
     const kind = analysisIssue?.kind
@@ -442,14 +549,19 @@ export default function App() {
 
   const analysisBusy = starting || running || reportLoading
   const currentRun = history.find(entry => entry.task_id === taskId)
+  const canStartAnalysis = !analysisBusy && !uploading && !modelSaving && (
+    inputMode === 'folder' ? Boolean(folderPath.trim()) : !papersLoading && !papersError && selectedPaperIds.size > 0
+  )
+  const hasAnalysisResults = runNumber > 0 || Boolean(reportId)
+  const readingFocused = workspaceMode === 'analysis' && analysisView === 'results' &&
+    focusReading && activeTab === 'report' && markdown
 
   return (
     <div className="app" data-theme={theme}>
-      {/* 顶部标题栏 */}
-      <header className="app-header">
-        <div className="brand">
-          <div>
-            <div className="brand-title brand-wordmark">Paper<span className="brand-wordmark-mind">Research-Agent
+      <div className={`app-body${workspaceMode === 'qa' ? ' qa-workspace' : ''}${readingFocused ? ' reading-focused' : ''}`}>
+        <aside className="sidebar" id="workspace-library">
+          <header className="workspace-brand">
+            <div className="brand-title brand-wordmark">Paper<span className="brand-wordmark-mind">Mind
               <svg className="brand-vine" viewBox="0 0 90 26" fill="none" aria-hidden="true">
                 <path className="brand-vine-stem" pathLength="1" d="M2 17C17 24 23 5 39 12S64 25 77 9" />
                 <path className="brand-vine-leaf brand-vine-leaf-first" d="M25 13Q22 5 16 7Q18 13 25 13Z" />
@@ -464,66 +576,30 @@ export default function App() {
                 </g>
               </svg>
             </span></div>
-            <div className="brand-subtitle">论文科研智能体</div>
-          </div>
-        </div>
-        <div className="header-right">
-          <span className="model-badge">
-            <span className={`dot ${healthOk === null ? 'connecting' : healthOk ? '' : 'offline'}`} />
-            <span>{healthOk === null ? '连接中' : healthOk ? '服务正常' : '服务离线'}</span>
-          </span>
-          {healthOk === false && <button className="text-action" onClick={() => setHealthRevision(value => value + 1)}>重新检测</button>}
-          <ModelSettingsDialog onSave={settings => {
-            setModel(settings.model)
-            setModelRevision(revision => revision + 1)
-          }} />
-          <button
-            type="button"
-            className="theme-toggle"
-            onClick={switchTheme}
-            aria-label={nextTheme === 'dark' ? '切换到深色模式' : '切换到浅色模式'}
-          >
-            <span className="theme-icon" aria-hidden>
-              {nextTheme === 'dark' ? '◐' : '☀'}
-            </span>
-            <span>{nextTheme === 'dark' ? '深色' : '浅色'}</span>
+          </header>
+            <PaperChatHistory state={paperChat} onOpen={id => void openPaperChat(id)} onNew={newPaperChat}
+              onResume={openPaperDraft} libraryLoading={papersLoading} />
+          <button type="button" className="workspace-library-toggle" aria-expanded={mobileLibraryOpen}
+            aria-controls="workspace-library-content" onClick={() => setMobileLibraryOpen(open => !open)}>
+            <span>选择论文</span>
+            <span>已选 {selectedPaperIds.size} 篇</span>
           </button>
-        </div>
-      </header>
-
-      <div className={`app-body${focusReading && activeTab === 'report' && markdown ? ' reading-focused' : ''}`}>
-        {/* 左侧输入区 + 进度 + 时间线 */}
-        <aside className="sidebar">
-          <div className="sidebar-scroll">
+          <div className="sidebar-scroll" id="workspace-library-content" data-mobile-open={mobileLibraryOpen}>
           <div className="input-card">
             <div className="input-card-header">
-              <div><span className="workspace-kicker">你的研究空间</span><h2 className="card-title">研究资料</h2></div>
-              <span className="library-total">{papers.length} 篇文献</span>
+              <h2 className="card-title">研究资料</h2>
+              {papers.length > 0 ? (
+                <button type="button" className="library-upload-compact"
+                  disabled={uploading || (workspaceMode === 'analysis' && analysisBusy)}
+                  title="选择 PDF，也可以拖入论文列表"
+                  onClick={() => paperFileInput.current?.click()}>
+                  {uploading ? '上传中…' : '＋ 添加论文'}
+                </button>
+              ) : <span className="library-total">{papers.length} 篇文献</span>}
             </div>
 
-            {/* 输入模式切换 */}
-            <div className="mode-toggle" role="group" aria-label="论文来源">
-              <button
-                className={`mode-btn ${inputMode === 'upload' ? 'active' : ''}`}
-                aria-pressed={inputMode === 'upload'}
-                onClick={() => setInputMode('upload')}
-                disabled={analysisBusy}
-              >
-                上传论文
-              </button>
-              <button
-                className={`mode-btn ${inputMode === 'folder' ? 'active' : ''}`}
-                aria-pressed={inputMode === 'folder'}
-                onClick={() => setInputMode('folder')}
-                disabled={analysisBusy}
-              >
-                文件夹路径
-              </button>
-            </div>
-
-            {/* 上传模式：论文库；文件夹模式：路径输入 */}
-            {inputMode === 'upload' ? (
               <PaperLibrary
+                fileInputRef={paperFileInput}
                 papers={papers}
                 selectedIds={selectedPaperIds}
                 onToggleSelect={handleToggleSelect}
@@ -536,52 +612,8 @@ export default function App() {
                 onRetry={() => void refreshPapers()}
                 onSelectMany={ids => setSelectedPaperIds(previous => new Set([...previous, ...ids]))}
                 onClearSelection={() => setSelectedPaperIds(new Set())}
-                disabled={analysisBusy}
+                disabled={workspaceMode === 'analysis' && analysisBusy}
               />
-            ) : (
-              <>
-                <input
-                  className="path-input"
-                  type="text"
-                  placeholder="例如：D:/papers 或 /home/user/papers"
-                  value={folderPath}
-                  onChange={(e) => setFolderPath(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !analysisBusy && !modelSaving) {
-                      void handleStart()
-                    }
-                  }}
-                  disabled={analysisBusy}
-                  aria-label="PDF 文件夹路径"
-                />
-                <p className="hint">填写存放 PDF 的本地文件夹路径。</p>
-              </>
-            )}
-
-            {/* 研究方向（两种模式都显示） */}
-            <div className="research-direction">
-              <label className="research-label" htmlFor="research-direction">
-                研究方向（可选）
-              </label>
-              <input
-                id="research-direction"
-                className="path-input"
-                type="text"
-                placeholder="例如：大模型高效微调、多模态推理"
-                value={researchDirection}
-                onChange={(e) => setResearchDirection(e.target.value)}
-                disabled={analysisBusy}
-                aria-label="研究方向"
-              />
-            </div>
-
-            <details className="model-disclosure">
-              <summary><span>分析模型</span><span>{analysisBusy ? currentRun?.model || model : model}</span></summary>
-              <ModelPicker model={analysisBusy ? currentRun?.model || model : model}
-                revision={modelRevision} disabled={analysisBusy} onChange={setModel} onSavingChange={setModelSaving} />
-            </details>
-
-
           </div>
 
           {/* 论文库操作错误 */}
@@ -591,30 +623,75 @@ export default function App() {
               <span className="error-text">{error}</span>
             </div>
           )}
-          <HistoryPanel entries={history} error={historyError} active={taskId} busy={analysisBusy}
-            selected={activeTab === 'report' ? reportId : taskId}
-            onShowActive={() => openTab('progress')}
-            onOpen={id => void openHistory(id)} onDelete={removeHistory} />
           </div>
-          <div className="analysis-action-bar">
-            <button
-              className="btn btn-primary"
-              onClick={() => void handleStart()}
-              disabled={
-                analysisBusy ||
-                uploading || (inputMode === 'upload' && (papersLoading || Boolean(papersError))) ||
-                modelSaving ||
-                (inputMode === 'folder' ? !folderPath.trim() : selectedPaperIds.size === 0)
-              }
-            >
-              {starting ? <><span className="spinner" /> 启动中...</> : analysisBusy ? '分析进行中' : uploading ? '正在上传论文…' : inputMode === 'upload' && selectedPaperIds.size ? `分析已选的 ${selectedPaperIds.size} 篇论文` : '启动分析'}
-            </button>
-            {inputMode === 'upload' && !selectedPaperIds.size && !analysisBusy && <p className="hint">请先上传并选择至少一篇论文。</p>}
-          </div>
+          <WorkspaceSettings dark={theme === 'dark'} onToggleTheme={switchTheme} health={healthOk}
+            onSaveModel={settings => {
+              setModel(settings.model)
+              setChatModel(undefined)
+              setChatReasoning(undefined)
+              setAnalysisReasoning(undefined)
+              setModelRevision(revision => revision + 1)
+            }} />
         </aside>
+
+        <WorkspaceDivider />
 
         {/* 右侧主内容区：Tab 切换 */}
         <main className="main-content">
+          <div className="qa-workspace-tabs" role="group" aria-label="工作台视图">
+            <button type="button" aria-pressed={workspaceMode === 'qa'} onClick={showQuestions}>问答</button>
+            <button type="button" aria-pressed={workspaceMode === 'analysis'} onClick={() => setWorkspaceMode('analysis')}>
+              分析{analysisBusy && <span className="qa-analysis-running" aria-label="进行中" />}
+            </button>
+            {workspaceMode === 'analysis' && <nav className="analysis-navigation" aria-label="分析工作台">
+              <button type="button" aria-pressed={analysisView === 'setup'} onClick={() => showAnalysisView('setup')}>新建分析</button>
+              <button type="button" aria-pressed={analysisView === 'history'} onClick={() => showAnalysisView('history')}>分析记录</button>
+              {hasAnalysisResults && <button type="button" aria-pressed={analysisView === 'results'}
+                onClick={() => showAnalysisView('results')}>分析结果</button>}
+            </nav>}
+          </div>
+          {healthOk === false && (
+            <div className="workspace-offline" role="status">
+              <span>本地服务离线，暂时无法提交请求。</span>
+              <button type="button" className="text-action" onClick={() => setHealthRevision(value => value + 1)}>重试连接</button>
+            </div>
+          )}
+          {workspaceMode === 'qa' ? (
+            <PaperChatPanel state={paperChat} selectedIds={selectedPaperIds} papers={papers} onNew={startPaperChatWithSelection}
+              model={activeChatModel} requestedModel={chatModel} effort={chatEffort} modelRevision={modelRevision}
+              onModelChange={name => {
+                if (name !== activeChatModel) setChatReasoning(undefined)
+                setChatModel(name)
+              }}
+              onEffortChange={effort => setChatReasoning({ model: activeChatModel, effort })}
+              onTogglePaper={handleToggleSelect} onUpload={handleUpload} uploading={uploading}
+              available={!papersLoading && !papersError && !uploading && !modelSaving}
+              onAnswered={() => {
+                if (!paperChat.chat) draftSelections.current.delete(paperChat.draftId)
+                void refreshPapers()
+              }} />
+          ) : <>
+          {analysisView === 'setup' && <div className="analysis-page-scroll">
+            <AnalysisSetup source={inputMode} onSourceChange={setInputMode}
+              papers={papers.filter(paper => selectedPaperIds.has(paper.paper_id))}
+              folderPath={folderPath} onFolderPathChange={setFolderPath}
+              direction={researchDirection} onDirectionChange={setResearchDirection}
+              modelControl={<ModelPicker model={analysisBusy ? currentRun?.model || model : model}
+                effort={analysisEffort} revision={modelRevision} disabled={analysisBusy}
+                onChange={name => {
+                  setAnalysisReasoning(undefined)
+                  setModel(name)
+                }}
+                onSavingChange={setModelSaving} onEffortChange={effort => setAnalysisReasoning({ model, effort })} />}
+              busy={analysisBusy} canStart={canStartAnalysis && healthOk !== false} onStart={() => void handleStart()} />
+          </div>}
+          {analysisView === 'history' && <div className="analysis-page-scroll">
+            <HistoryPanel entries={history} error={historyError} active={taskId} busy={analysisBusy} starting={starting}
+              selected={activeTab === 'report' ? reportId : taskId}
+              onOpenProgress={openRunningAnalysis}
+              onOpen={id => void openHistory(id)} onDelete={removeHistory} />
+          </div>}
+          {analysisView === 'results' && <>
           <WorkspaceTabs active={activeTab} onChange={openTab} progressEnabled={runNumber > 0}
             evaluationCount={evaluation ? evaluation.innovations_scores?.length || report?.report?.innovations?.length || 0 : undefined}
             canFocus={activeTab === 'report' && Boolean(markdown)} focused={focusReading} onToggleFocus={toggleReading} />
@@ -626,10 +703,7 @@ export default function App() {
                 <ReportView
                   markdown={markdown}
                   taskId={reportId}
-                  model={report?.model}
-                  usage={report?.usage}
                   result={report?.report}
-                  onShowEvaluation={() => openTab('evaluation')}
                   pendingMessage={historyLoading ? '正在打开历史报告…' : reportLoading ? '正在读取研究报告…' : analysisBusy && !report ? '论文分析中' : undefined}
                   error={historyReportError || (!analysisBusy && !report ? analysisIssue?.message : undefined)}
                   onShowProgress={runNumber > 0 && !historyLoading && !historyReportError ? () => openTab('progress') : undefined}
@@ -655,6 +729,8 @@ export default function App() {
               />
             )}
           </div>
+          </>}
+          </>}
         </main>
       </div>
     </div>

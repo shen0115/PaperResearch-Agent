@@ -5,7 +5,7 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from decimal import Decimal
 from functools import lru_cache
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 from urllib.parse import urlsplit
 
 import httpx
@@ -19,6 +19,15 @@ from backend.storage.workspace import ModelConfig
 
 logger = logging.getLogger(__name__)
 
+ReasoningEffort = Literal["low", "high", "max"]
+
+
+def reasoning_efforts(base_url: str, model: str) -> tuple[ReasoningEffort, ...]:
+    if urlsplit(base_url).hostname == "api.deepseek.com" and model in {"deepseek-flash", "deepseek-v4-pro"}:
+        return ("low", "high", "max")
+    return ()
+
+
 class ModelRequestRejected(RuntimeError):
     """Provider rejected the request format before generation."""
 
@@ -26,7 +35,8 @@ class ModelRequestRejected(RuntimeError):
 class DeepSeekClient:
     """DeepSeek 异步客户端，封装 OpenAI 兼容的 Chat Completions 接口"""
 
-    def __init__(self, config: ModelConfig | None = None, on_usage: Callable[[dict], None] | None = None) -> None:
+    def __init__(self, config: ModelConfig | None = None, on_usage: Callable[[dict], None] | None = None,
+                 reasoning_effort: ReasoningEffort | None = None) -> None:
         # DeepSeek 兼容 OpenAI API，直接复用 AsyncOpenAI
         base_url = config.base_url if config else settings.DEEPSEEK_BASE_URL
         self.client = AsyncOpenAI(
@@ -36,6 +46,7 @@ class DeepSeekClient:
             http_client=httpx.AsyncClient(timeout=settings.LLM_TIMEOUT, follow_redirects=False),
         )
         self.model = config.model if config else settings.DEEPSEEK_MODEL
+        self.reasoning_effort = reasoning_effort
         self.official_deepseek = urlsplit(base_url).hostname == "api.deepseek.com"
         self.timeout = settings.LLM_TIMEOUT
         self.max_retries = settings.TOOL_MAX_RETRIES
@@ -139,6 +150,9 @@ class DeepSeekClient:
             # uses standard assistant/tool messages rather than reasoning history.
             if self.official_deepseek:
                 kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        elif self.reasoning_effort:
+            # openai 1.51 does not declare reasoning_effort as an SDK argument.
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}, "reasoning_effort": self.reasoning_effort}
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 

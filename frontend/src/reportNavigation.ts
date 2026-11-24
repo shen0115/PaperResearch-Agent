@@ -1,4 +1,5 @@
 import type { Element, ElementContent, Root } from 'hast'
+import type { Innovation } from './types'
 
 interface Heading {
   id: string
@@ -36,8 +37,53 @@ function slug(label: string): string {
     .replace(/[^\p{L}\p{M}\p{N}\s_-]/gu, '').trim().replace(/\s+/g, '-') || 'section'
 }
 
-export default function reportNavigation() {
+function normalized(value: string): string {
+  return value.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{M}\p{N}]/gu, '')
+}
+
+function preserveInnovationDetails(tree: Root, innovations: Innovation[]) {
+  const body = normalized(headingText(element('div', {}, tree.children.filter(child => child.type !== 'doctype'))))
+  const missing = innovations.flatMap((item, index) => {
+    const title = item.title?.trim()
+    const idea = item.idea?.trim()
+    const hasTitle = title && body.includes(normalized(title))
+    const hasIdea = idea && body.includes(normalized(idea))
+    if ((!title || hasTitle) && (!idea || hasIdea)) return []
+    if (hasTitle && idea && !hasIdea) {
+      const heading = tree.children.findIndex(child =>
+        child.type === 'element' && child.tagName === 'h3' && normalized(headingText(child)).includes(normalized(title)),
+      )
+      if (heading >= 0) {
+        const nextHeading = tree.children.findIndex((child, position) =>
+          position > heading && child.type === 'element' && /^h[1-3]$/.test(child.tagName),
+        )
+        tree.children.splice(nextHeading < 0 ? tree.children.length : nextHeading, 0, element('p', {}, [text(idea)]))
+        return []
+      }
+    }
+    return [
+      element('h3', {}, [text(title || `创新点 ${index + 1}`)]),
+      ...(idea && !hasIdea ? [element('p', {}, [text(idea)])] : []),
+    ]
+  })
+  if (!missing.length) return
+
+  const sectionIndex = tree.children.findIndex(child =>
+    child.type === 'element' && child.tagName === 'h2' && /创新(?:点|思路|方案|建议)/u.test(headingText(child)),
+  )
+  if (sectionIndex < 0) {
+    tree.children.push(element('h2', {}, [text('创新思路补充')]), ...missing)
+    return
+  }
+  const nextSection = tree.children.findIndex((child, index) =>
+    index > sectionIndex && child.type === 'element' && /^h[12]$/.test(child.tagName),
+  )
+  tree.children.splice(nextSection < 0 ? tree.children.length : nextSection, 0, ...missing)
+}
+
+export default function reportNavigation(innovations: Innovation[] = []) {
   return (tree: Root) => {
+    if (innovations.length) preserveInnovationDetails(tree, innovations)
     const headings: Heading[] = []
     const fragments = new Map<string, string>()
     visitElements(tree, node => {
@@ -52,7 +98,6 @@ export default function reportNavigation() {
       headings.push({ id, label: label || '未命名章节', depth: Number(node.tagName[1]) })
     })
 
-    if (!headings.length) return
     visitElements(tree, node => {
       const href = node.properties.href
       if (node.tagName !== 'a' || typeof href !== 'string' || !href.startsWith('#')) return
@@ -64,9 +109,7 @@ export default function reportNavigation() {
       }
     })
 
-    // Only major sections belong in the compact navigation; keep all heading anchors.
     const sections = headings.filter(heading => heading.depth === 2)
-    if (!sections.length) return
     const links = element('ol', {}, sections.map(heading =>
       element('li', {}, [
         element('a', { href: `#${heading.id}` }, [text(
@@ -75,11 +118,20 @@ export default function reportNavigation() {
       ]),
     ))
 
-    tree.children = [
+    const prose = tree.children.filter(child => child.type !== 'doctype')
+    const first = prose.findIndex(child => child.type !== 'text' || child.value.trim())
+    const firstNode = prose[first]
+    const title = firstNode?.type === 'element' && firstNode.tagName === 'h1'
+      ? prose.splice(first, 1)[0]
+      : element('h1', {}, [text('研究报告')])
+    const actions = sections.length >= 4 ? [
       element('nav', { className: ['report-toc'], ariaLabel: '章节导航' }, [
-        element('details', {}, [element('summary', {}, [text('章节导航')]), links]),
+        element('details', {}, [element('summary', { className: ['btn', 'btn-secondary'] }, [text('目录')]), links]),
       ]),
-      element('div', { className: ['report-prose'] }, tree.children.filter(child => child.type !== 'doctype')),
+    ] : []
+    tree.children = [
+      element('header', { className: ['report-toolbar'] }, [title, ...actions]),
+      element('div', { className: ['report-prose'] }, prose),
     ]
   }
 }

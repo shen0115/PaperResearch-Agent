@@ -1,9 +1,11 @@
 // 论文库组件：上传、列表、选择、删除
 import { useRef, useState } from 'react'
+import type { RefObject } from 'react'
 import type { Paper, PreprocessStatus } from '../types'
 import DeleteDialog from './DeleteDialog'
 
 interface PaperLibraryProps {
+  fileInputRef: RefObject<HTMLInputElement>
   papers: Paper[]
   selectedIds: Set<string>
   onToggleSelect: (paperId: string) => void
@@ -31,6 +33,7 @@ function StatusBadge({ status, label }: { status: PreprocessStatus; label: strin
 }
 
 export default function PaperLibrary({
+  fileInputRef,
   papers,
   selectedIds,
   onToggleSelect,
@@ -40,7 +43,6 @@ export default function PaperLibrary({
   uploadQueue, loading, error, onRetry, onSelectMany, onClearSelection,
   disabled = false,
 }: PaperLibraryProps) {
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const [deleteTarget, setDeleteTarget] = useState<Paper | null>(null)
   const [query, setQuery] = useState('')
   const [dragging, setDragging] = useState(false)
@@ -59,30 +61,45 @@ export default function PaperLibrary({
   }
 
   return (
-    <div className="paper-library">
-      {/* 上传区域 */}
-      <div className={`upload-area${dragging ? ' upload-dragging' : ''}`}
-        onDragEnter={event => { event.preventDefault(); if (!disabled && !uploading) { dragDepth.current += 1; setDragging(true) } }}
-        onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = disabled || uploading ? 'none' : 'copy' }}
-        onDragLeave={event => { event.preventDefault(); dragDepth.current = Math.max(0, dragDepth.current - 1); if (!dragDepth.current) setDragging(false) }}
-        onDrop={event => { event.preventDefault(); dragDepth.current = 0; setDragging(false); if (!disabled && !uploading) { setQuery(''); onUpload(Array.from(event.dataTransfer.files)) } }}>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".pdf"
-          multiple
-          onChange={handleFileChange}
-          style={{ display: 'none' }}
-          disabled={uploading || disabled}
-        />
+    <div className={`paper-library${dragging ? ' upload-dragging' : ''}`}
+      onDragEnter={event => {
+        if (!event.dataTransfer.types.includes('Files')) return
+        event.preventDefault()
+        if (disabled || uploading) return
+        dragDepth.current += 1
+        setDragging(true)
+      }}
+      onDragOver={event => {
+        if (!event.dataTransfer.types.includes('Files')) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = disabled || uploading ? 'none' : 'copy'
+      }}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1)
+        if (!dragDepth.current) setDragging(false)
+      }}
+      onDrop={event => {
+        const files = Array.from(event.dataTransfer.files)
+        if (!files.length) return
+        event.preventDefault()
+        dragDepth.current = 0
+        setDragging(false)
+        if (disabled || uploading) return
+        setQuery('')
+        onUpload(files)
+      }}>
+      <input ref={fileInputRef} type="file" accept=".pdf" multiple onChange={handleFileChange}
+        hidden disabled={uploading || disabled} />
+      {papers.length === 0 && <div className="upload-area">
         <button
+          type="button"
           className="btn btn-upload"
           onClick={() => fileInputRef.current?.click()}
           disabled={uploading || disabled}
         >
           {uploading ? <><span className="spinner" /> 上传中...</> : <span><strong>＋ 添加论文</strong><small>{dragging ? '松开以上传文件' : '点击或拖入 PDF · 支持批量上传'}</small></span>}
         </button>
-      </div>
+      </div>}
       {uploadQueue.length > 0 && <details className="upload-results" open>
         <summary>上传记录 · 成功 {uploadQueue.filter(item => item.status === 'done').length} / {uploadQueue.length}</summary>
         <ul aria-live="polite">{uploadQueue.map((item, index) => <li key={index} className={`upload-result-${item.status}`}>
@@ -107,6 +124,7 @@ export default function PaperLibrary({
         ) : (
           visiblePapers.map((paper) => {
             const selected = selectedIds.has(paper.paper_id)
+            const checkboxId = `paper-selection-${paper.paper_id}`
             const allDone =
               paper.parse_status === 'done' &&
               paper.extract_status === 'done' &&
@@ -118,6 +136,7 @@ export default function PaperLibrary({
               >
                 <label className="paper-checkbox">
                   <input
+                    id={checkboxId}
                     type="checkbox"
                     checked={selected}
                     aria-label={`选择论文：${paper.title || paper.filename}`}
@@ -126,9 +145,9 @@ export default function PaperLibrary({
                   />
                 </label>
                 <div className="paper-info">
-                  <div className="paper-title" title={paper.title || paper.filename}>
+                  <label className="paper-title" htmlFor={checkboxId} title={paper.title || paper.filename}>
                     {paper.title || paper.filename}
-                  </div>
+                  </label>
                   <span className="paper-filetype" title={paper.filename}>PDF</span>
                   <details className="paper-status-details"><summary>
                     <span className={`status-badge ${[paper.parse_status, paper.extract_status, paper.index_status].includes('failed') ? 'status-failed' : allDone ? 'status-cached' : 'status-pending'}`}>

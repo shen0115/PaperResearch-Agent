@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import re
+from tempfile import NamedTemporaryFile
 from collections import Counter
 from pathlib import Path
 from typing import Optional
@@ -268,8 +269,15 @@ def save_parsed(paper_id: str, parsed: dict) -> Path:
         缓存文件路径
     """
     cache_path = _parsed_cache_path(paper_id)
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(parsed, f, ensure_ascii=False, indent=2, default=str)
+    with NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache_path.parent, delete=False) as file:
+        temporary = Path(file.name)
+        try:
+            json.dump(parsed, file, ensure_ascii=False, indent=2, default=str)
+            file.close()
+            temporary.replace(cache_path)
+        finally:
+            file.close()
+            temporary.unlink(missing_ok=True)
     logger.info("解析结果已缓存至 %s", cache_path)
     return cache_path
 

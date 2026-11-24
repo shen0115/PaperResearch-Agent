@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.routes import router
 from backend.api.model_settings import router as model_settings_router
+from backend.api.paper_chat import router as paper_chat_router
 
 # 配置日志
 logging.basicConfig(
@@ -43,6 +44,7 @@ app.add_middleware(
 # 挂载路由
 app.include_router(router)
 app.include_router(model_settings_router)
+app.include_router(paper_chat_router)
 
 
 @app.on_event("startup")
@@ -55,7 +57,7 @@ async def on_startup() -> None:
     import time as _t
 
     _t0 = _t.perf_counter()
-    logger.info("PaperResearch-Agent API 已启动，开始预加载重型模块...")
+    logger.info("Paper Innovation Agent API 已启动，开始预加载重型模块...")
 
     # 顺序预加载：torch → transformers → chromadb → embedding（含模型加载）
     try:

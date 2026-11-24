@@ -115,6 +115,8 @@ class HybridSearcher:
         top_k: int = 5,
         vector_weight: float = 0.6,
         bm25_weight: float = 0.4,
+        *,
+        paper_paths: Optional[list[str]] = None,
     ) -> list[dict]:
         """混合检索：向量 + BM25 各取 top_k*2，加权分数归一化重排。
 
@@ -122,17 +124,25 @@ class HybridSearcher:
             list[dict]，每项 {text, paper_path, title, section, score}，按融合分数降序
         """
         fetch_k = top_k * 2
-        vector_results = self.vector_store.vector_search(query, top_k=fetch_k)
-        bm25_results = self.bm25_store.bm25_search(query, top_k=fetch_k)
+        if paper_paths is None:
+            vector_results = self.vector_store.vector_search(query, top_k=fetch_k)
+            bm25_results = self.bm25_store.bm25_search(query, top_k=fetch_k)
+        elif paper_paths:
+            vector_results = self.vector_store.vector_search(query, top_k=fetch_k, paper_paths=paper_paths)
+            scoped_bm25 = BM25Store()
+            scoped_bm25.add_chunks(self.vector_store.get_paper_chunks(paper_paths))
+            bm25_results = scoped_bm25.bm25_search(query, top_k=fetch_k)
+        else:
+            return []
 
         # 各路结果做 min-max 归一化到 [0,1]
         vector_results = self._normalize(vector_results)
         bm25_results = self._normalize(bm25_results)
 
-        # 以 text 为 key 合并去重，加权累加分数
-        merged: dict[str, dict] = {}
+        # 问答中保留不同论文的独立出处。
+        merged: dict[tuple[str, str, str], dict] = {}
         for r in vector_results:
-            key = r["text"]
+            key = (r["text"], r["paper_path"], r["section"]) if paper_paths else (r["text"], "", "")
             s = vector_weight * r["norm_score"]
             if key not in merged:
                 merged[key] = {
@@ -145,7 +155,7 @@ class HybridSearcher:
             else:
                 merged[key]["score"] += s
         for r in bm25_results:
-            key = r["text"]
+            key = (r["text"], r["paper_path"], r["section"]) if paper_paths else (r["text"], "", "")
             s = bm25_weight * r["norm_score"]
             if key not in merged:
                 merged[key] = {
@@ -190,8 +200,10 @@ class HybridSearcher:
         top_k: int = 5,
         vector_weight: float = 0.6,
         bm25_weight: float = 0.4,
+        *,
+        paper_paths: Optional[list[str]] = None,
     ) -> list[dict]:
         """异步混合检索"""
         return await asyncio.to_thread(
-            self.search, query, top_k, vector_weight, bm25_weight
+            self.search, query, top_k, vector_weight, bm25_weight, paper_paths=paper_paths
         )

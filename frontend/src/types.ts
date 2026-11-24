@@ -135,6 +135,8 @@ export interface OfficialPricing {
   off_peak: ModelTokenRates
 }
 
+export type ReasoningEffort = 'low' | 'high' | 'max'
+
 export interface ModelSettings {
   base_url: string
   model: string
@@ -145,6 +147,7 @@ export interface ModelSettings {
   compatibility?: ModelCompatibility | null
   official_pricing?: OfficialPricing | null
   provider_reported_cost?: 'openrouter' | null
+  reasoning_efforts?: ReasoningEffort[]
 }
 
 export interface ModelCompatibility {
@@ -214,6 +217,33 @@ export interface Paper {
   indexed_at?: string | null
 }
 
+export interface PaperChatSummary {
+  id: string
+  title: string
+  papers: { paper_id: string; title: string }[]
+  updated_at: string
+}
+
+export interface PaperChatSource {
+  number: number
+  paper_id: string
+  title: string
+  section: string
+  excerpt: string
+}
+
+export interface PaperChatTurn {
+  id: string
+  question: string
+  answer: string
+  sources: PaperChatSource[]
+  model?: string | null
+}
+
+export interface PaperChat extends PaperChatSummary {
+  turns: PaperChatTurn[]
+}
+
 /** 上传论文响应 */
 export interface UploadResponse {
   paper_id: string
@@ -226,4 +256,5 @@ export interface AnalyzeParams {
   folder_path?: string
   paper_ids?: string[]
   research_direction?: string
+  reasoning_effort?: ReasoningEffort
 }

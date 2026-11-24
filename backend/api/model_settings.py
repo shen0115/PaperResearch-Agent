@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, SecretStr
 
 from backend.config import settings
+from backend.llm.client import reasoning_efforts
 from backend.llm.compatibility import ProbeOutputLimit, check_extraction_compatibility
 from backend.llm.pricing import is_openrouter, public_tariff
 from backend.storage.workspace import ModelConfig, load_compatibility, load_model, save_compatibility, save_model
@@ -36,7 +37,7 @@ def require_local_origin(request: Request) -> None:
     if (request.client and request.client.host not in local_hosts) or (
         origin and (urlsplit(origin).scheme not in {"http", "https"} or urlsplit(origin).hostname not in local_hosts)
     ):
-        raise HTTPException(403, "请从本机 PaperResearch-Agent 页面操作。")
+        raise HTTPException(403, "请从本机 PaperMind 页面操作。")
 
 
 def provider_credentials(payload: ProviderRequest) -> tuple[str, str, bool]:
@@ -89,6 +90,7 @@ def get_model_settings() -> dict:
 def model_settings_view(config: ModelConfig) -> dict:
     return {
         **config.public(), "compatibility": load_compatibility(config),
+        "reasoning_efforts": reasoning_efforts(config.base_url, config.model),
         "official_pricing": public_tariff(config.base_url, config.model),
         "provider_reported_cost": "openrouter" if is_openrouter(config.base_url) else None,
     }
@@ -98,7 +100,10 @@ def model_settings_view(config: ModelConfig) -> dict:
 async def get_available_models(payload: ProviderRequest, request: Request) -> dict:
     require_local_origin(request)
     url, key, _ = provider_credentials(payload)
-    return {"models": await discover_models(url, key)}
+    models = await discover_models(url, key)
+    return {"models": models, "reasoning_efforts": {
+        model: efforts for model in models if (efforts := reasoning_efforts(url, model))
+    }}
 
 
 @router.post("/compatibility")

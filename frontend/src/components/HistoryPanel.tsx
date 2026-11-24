@@ -38,15 +38,16 @@ export function CostLabel({ usage }: { usage?: ModelUsage | null }) {
 }
 
 export default function HistoryPanel({
-  entries, onOpen, onShowActive, onDelete, selected, active, busy, error,
+  entries, onOpen, onOpenProgress, onDelete, selected, active, busy, starting, error,
 }: {
   entries: HistoryEntry[]
   onOpen: (id: string) => void
-  onShowActive: () => void
+  onOpenProgress: (entry: HistoryEntry) => void
   onDelete: (id: string) => Promise<void>
   selected: string | null
   active: string | null
   busy: boolean
+  starting: boolean
   error: boolean
 }) {
   const [target, setTarget] = useState<HistoryEntry | null>(null)
@@ -57,9 +58,10 @@ export default function HistoryPanel({
 
   return (
     <section className="history-panel" aria-labelledby="history-title">
-      <details className="history-disclosure">
-      <summary id="history-title"><span>分析历史</span><span>{entries.length} 份记录</span></summary>
-      <div className="history-disclosure-content">
+      <header className="analysis-history-heading">
+        <h1 id="history-title">分析记录</h1>
+        <span>{entries.length} 份</span>
+      </header>
       {entries.length > 0 && <div className="history-filters">
         <input type="search" placeholder="搜索分析记录" aria-label="搜索分析记录" value={query} onChange={event => setQuery(event.target.value)} />
         <select aria-label="筛选分析状态" value={filter} onChange={event => setFilter(event.target.value)}>
@@ -70,8 +72,10 @@ export default function HistoryPanel({
       {!error && !entries.length && <p className="history-empty">完成一次分析后，可在这里打开报告。</p>}
       <ul className="history-list">
         {visibleEntries.map(entry => {
-          const actionable = entry.status === 'completed' || entry.task_id === active
-          const canDelete = entry.status !== 'pending' && entry.status !== 'running' && !(busy && entry.task_id === active)
+          const inProgress = entry.status === 'pending' || entry.status === 'running'
+          const openProgress = inProgress || (entry.task_id === active && entry.status !== 'completed')
+          const actionable = entry.status === 'completed' || openProgress
+          const canDelete = !inProgress && !(busy && entry.task_id === active)
           const content = (
             <>
               <span className="history-name" title={entry.title}>{entry.title || '论文分析'}</span>
@@ -86,7 +90,8 @@ export default function HistoryPanel({
             <li key={entry.task_id} className="history-entry"><div className="history-item">
               {actionable ? (
                 <button type="button" className="history-row" aria-pressed={selected === entry.task_id}
-                  onClick={() => entry.task_id === active && entry.status !== 'completed' ? onShowActive() : onOpen(entry.task_id)}>
+                  disabled={openProgress && starting}
+                  onClick={() => openProgress ? onOpenProgress(entry) : onOpen(entry.task_id)}>
                   {content}
                 </button>
               ) : (
@@ -106,7 +111,6 @@ export default function HistoryPanel({
         })}
       </ul>
       {entries.length > 0 && !visibleEntries.length && <p className="history-empty">没有匹配的分析记录。</p>}
-      </div></details>
       {target && (
         <DeleteDialog title="删除分析记录？" onClose={() => setTarget(null)}
           onConfirm={() => onDelete(target.task_id)}>
